@@ -18,7 +18,7 @@ nix-build-substitutable [--skip-prefer-local] [--push-command <CMD>] <INSTALLABL
 ```
 
 - **stdout** lists the built output paths, one per line.
-- **stderr** has the normal Nix output and a summary.
+- **stderr** has the normal Nix output, plus what will be built, skipped and fetched.
 - **`--push-command <CMD>`** runs `sh -c CMD` with the output paths on stdin. It doesn't run if
   nothing was built.
 - **`<NIX_ARGS>`** go to `nix build`, for example `-- -L --impure`. Only `--option NAME VALUE`

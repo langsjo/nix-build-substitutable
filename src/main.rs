@@ -2,8 +2,9 @@
 
 mod daemon;
 mod filter;
+mod report;
 
-use std::io::Write;
+use std::io::{BufRead, BufReader, Read, Write};
 use std::os::fd::AsFd;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -18,6 +19,7 @@ use serde_json::Value;
 
 use crate::daemon::NixDaemon;
 use crate::filter::SkipRule;
+use crate::report::{MissingListFilter, describe_plan};
 
 #[derive(Parser)]
 #[command(version, about)]
@@ -73,11 +75,8 @@ async fn main() -> Result<()> {
         .await?;
     drop(daemon);
     eprintln!(
-        "{} requested, {} to build including dependencies, {} skipped, {} to fetch",
-        to_build.len(),
-        planned.will_build.len(),
-        missing.will_build.difference(&planned.will_build).count(),
-        planned.will_substitute.len(),
+        "{}",
+        describe_plan(&store_dir, to_build.len(), &missing, &planned)
     );
     if to_build.is_empty() {
         return Ok(());
@@ -104,15 +103,38 @@ fn parse_derived_paths(store_dir: &StoreDir, paths: &[String]) -> Result<Vec<Der
 ///
 /// Going through `nix build` keeps flake refs, fragments and `^out` handling identical to Nix.
 fn evaluate(cli: &Cli) -> Result<Vec<String>> {
-    let output = Command::new("nix")
+    let mut child = Command::new("nix")
         .args(["build", "--dry-run", "--json", "--no-link"])
         .args(&cli.installables)
         .args(&cli.nix_args)
-        .stderr(Stdio::inherit())
-        .output()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .context("running `nix build --dry-run`")?;
+    let log = child.stderr.take().context("nix build stderr")?;
+    let forwarder = std::thread::spawn(move || forward_evaluation_log(log));
+
+    let output = child.wait_with_output()?;
+    forwarder
+        .join()
+        .expect("the log forwarder panicked")
+        .context("reading the `nix build --dry-run` log")?;
     ensure!(output.status.success(), "evaluation failed");
     parse_targets(&serde_json::from_slice(&output.stdout)?)
+}
+
+/// Shows warnings and errors as they happen, without Nix's unfiltered list of missing paths.
+fn forward_evaluation_log(log: impl Read) -> std::io::Result<()> {
+    let mut filter = MissingListFilter::default();
+    for line in BufReader::new(log).split(b'\n') {
+        let line = line?;
+        if filter.keeps(&String::from_utf8_lossy(&line)) {
+            let mut stderr = std::io::stderr().lock();
+            stderr.write_all(&line)?;
+            stderr.write_all(b"\n")?;
+        }
+    }
+    Ok(())
 }
 
 /// Converts the JSON of `nix build --dry-run --json` into `DerivedPath` syntax.

@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use tempfile::TempDir;
 
-const FLAKE: &str = r#"{
+const FLAKE: &str = r##"{
   outputs = { self }: let
     mk = name: script: attrs: derivation ({
       inherit name;
@@ -26,6 +26,7 @@ const FLAKE: &str = r#"{
     packages."@system@" = {
       inherit plain cached;
       inherit preferLocal;
+      traced = builtins.trace "trace-from-evaluation" (file "traced" { });
       usesPreferLocal = mk "uses-prefer-local" "echo ${preferLocal} > $out" { };
       usesCached = mk "uses-cached" "echo ${cached} > $out" { };
       structuredLocal = file "structured-local" { __structuredAttrs = true; allowSubstitutes = false; };
@@ -36,7 +37,7 @@ const FLAKE: &str = r#"{
       cachedInputOnly = mk "cached-input-only" "echo ${cached} > $out" localOnly;
     };
   };
-}"#;
+}"##;
 
 #[derive(Clone, Copy, PartialEq)]
 enum Store {
@@ -533,4 +534,48 @@ fn summary_with_nothing_to_request() {
         summary,
         "0 requested, 0 to build including dependencies, 1 skipped, 0 to fetch"
     );
+}
+
+#[test]
+fn only_the_real_plan_is_listed() {
+    let sandbox = Sandbox::new(Store::Local);
+    sandbox.populate_cache();
+    let output = sandbox.run(&[], &["toplevel"], &[]);
+    assert!(output.status.success());
+
+    let log = lines(&output.stderr);
+    let position = |wanted: &str| log.iter().position(|line| line.starts_with(wanted));
+    let plain_drv = |package: &str| {
+        sandbox.nix_ok(&[
+            "eval",
+            "--raw",
+            &format!("{}.drvPath", sandbox.installable(package)),
+        ])
+    };
+
+    let built = position("will build 1 derivation:").expect("no list of builds");
+    assert_eq!(log[built + 1], format!("  {}", plain_drv("plain")));
+    let skipped = position("skipped 1 derivation:").expect("no list of skipped derivations");
+    assert_eq!(log[skipped + 1], format!("  {}", plain_drv("toplevel")));
+    assert_eq!(position("will fetch"), None, "nothing should be fetched");
+}
+
+#[test]
+fn skipped_derivations_are_only_mentioned_as_skipped() {
+    let sandbox = Sandbox::new(Store::Local);
+    let output = sandbox.run(&[], &["toplevel"], &[]);
+    let log = String::from_utf8_lossy(&output.stderr);
+    let toplevel_drv = sandbox.nix_ok(&[
+        "eval",
+        "--raw",
+        &format!("{}.drvPath", sandbox.installable("toplevel")),
+    ]);
+    assert_eq!(log.matches(&toplevel_drv).count(), 1, "{log}");
+}
+
+#[test]
+fn evaluation_messages_are_still_shown() {
+    let sandbox = Sandbox::new(Store::Local);
+    let output = sandbox.run(&[], &["traced"], &[]);
+    assert!(String::from_utf8_lossy(&output.stderr).contains("trace-from-evaluation"));
 }
