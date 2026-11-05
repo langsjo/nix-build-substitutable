@@ -47,11 +47,7 @@ async fn main() -> Result<()> {
 
     let targets = evaluate(&cli)?;
     let store_dir = store_dir_of(&targets)?;
-    let derived_paths = targets
-        .iter()
-        .map(|target| store_dir.parse(target))
-        .collect::<Result<Vec<DerivedPath>, _>>()
-        .context("parsing the paths `nix build` reported")?;
+    let derived_paths = parse_derived_paths(&store_dir, &targets)?;
 
     let mut daemon = NixDaemon::connect(&store_dir, &settings).await?;
     let missing = daemon.query_missing(&derived_paths).await?;
@@ -69,12 +65,19 @@ async fn main() -> Result<()> {
             to_build.push(format!("{}^*", store_dir.display(drv_path)));
         }
     }
+
+    // Asked again because skipped derivations can still be needed by the requested ones, and what
+    // they alone needed is no longer fetched.
+    let planned = daemon
+        .query_missing(&parse_derived_paths(&store_dir, &to_build)?)
+        .await?;
     drop(daemon);
     eprintln!(
-        "{} to build, {} skipped, {} already cached",
+        "{} requested, {} to build including dependencies, {} skipped, {} to fetch",
         to_build.len(),
-        missing.will_build.len() - to_build.len(),
-        missing.will_substitute.len(),
+        planned.will_build.len(),
+        missing.will_build.difference(&planned.will_build).count(),
+        planned.will_substitute.len(),
     );
     if to_build.is_empty() {
         return Ok(());
@@ -87,6 +90,14 @@ async fn main() -> Result<()> {
         push(command, &out_paths)?;
     }
     Ok(())
+}
+
+fn parse_derived_paths(store_dir: &StoreDir, paths: &[String]) -> Result<Vec<DerivedPath>> {
+    paths
+        .iter()
+        .map(|path| store_dir.parse(path))
+        .collect::<Result<_, _>>()
+        .context("parsing derived paths")
 }
 
 /// Evaluates the installables and returns what they resolve to, in `DerivedPath` syntax.

@@ -20,11 +20,14 @@ const FLAKE: &str = r#"{
     file = name: attrs: mk name "echo ${name} > $out" attrs;
     plain = file "plain" { };
     cached = file "cached" { };
+    preferLocal = file "prefer-local" { preferLocalBuild = true; };
     localOnly = { allowSubstitutes = false; preferLocalBuild = true; };
   in {
     packages."@system@" = {
       inherit plain cached;
-      preferLocal = file "prefer-local" { preferLocalBuild = true; };
+      inherit preferLocal;
+      usesPreferLocal = mk "uses-prefer-local" "echo ${preferLocal} > $out" { };
+      usesCached = mk "uses-cached" "echo ${cached} > $out" { };
       structuredLocal = file "structured-local" { __structuredAttrs = true; allowSubstitutes = false; };
       fails = mk "fails" "exit 1" { };
 
@@ -479,4 +482,55 @@ fn nix_remote_env_is_honoured() {
 #[test]
 fn store_in_nix_config_env_is_honoured() {
     check_all_store_settings_are_honoured(Store::Local, StoreChoice::NixConfigEnv);
+}
+
+fn summary_of(output: &Output) -> String {
+    assert!(output.status.success(), "nix-build-substitutable failed");
+    lines(&output.stderr)
+        .into_iter()
+        .find(|line| line.contains(" requested, "))
+        .expect("no summary line")
+}
+
+#[test]
+fn summary_leaves_out_what_only_skipped_derivations_needed() {
+    let sandbox = Sandbox::new(Store::Local);
+    sandbox.populate_cache();
+    let summary = summary_of(&sandbox.run(&[], &["toplevel"], &[]));
+    // `cached` is an input of the skipped toplevel only, so it isn't fetched.
+    assert_eq!(
+        summary,
+        "1 requested, 1 to build including dependencies, 1 skipped, 0 to fetch"
+    );
+}
+
+#[test]
+fn summary_counts_skipped_derivations_built_as_dependencies() {
+    let sandbox = Sandbox::new(Store::Local);
+    let output = sandbox.run(&["--skip-prefer-local"], &["usesPreferLocal"], &[]);
+    assert_eq!(
+        summary_of(&output),
+        "1 requested, 2 to build including dependencies, 0 skipped, 0 to fetch"
+    );
+}
+
+#[test]
+fn summary_counts_inputs_to_fetch() {
+    let sandbox = Sandbox::new(Store::Local);
+    sandbox.populate_cache();
+    let summary = summary_of(&sandbox.run(&[], &["usesCached"], &[]));
+    assert_eq!(
+        summary,
+        "1 requested, 1 to build including dependencies, 0 skipped, 1 to fetch"
+    );
+}
+
+#[test]
+fn summary_with_nothing_to_request() {
+    let sandbox = Sandbox::new(Store::Local);
+    let summary = summary_of(&sandbox.run(&[], &["structuredLocal"], &[]));
+    assert_eq!(
+        summary,
+        "0 requested, 0 to build including dependencies, 1 skipped, 0 to fetch"
+    );
 }
