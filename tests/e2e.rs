@@ -22,10 +22,18 @@ const FLAKE: &str = r##"{
     cached = file "cached" { };
     preferLocal = file "prefer-local" { preferLocalBuild = true; };
     localOnly = { allowSubstitutes = false; preferLocalBuild = true; };
+    shellApp = mk "shell-app" "echo app > $out" {
+      allowSubstitutes = true;
+      preferLocalBuild = false;
+      executable = true;
+      buildCommand = "target=$out/bin/shell-app";
+      text = "#!/nix/store/x/bin/bash\nset -o errexit\n";
+    };
   in {
     packages."@system@" = {
       inherit plain cached;
-      inherit preferLocal;
+      inherit preferLocal shellApp;
+      usesShellApp = mk "uses-shell-app" "echo ${shellApp} > $out" { };
       traced = builtins.trace "trace-from-evaluation" (file "traced" { });
       usesPreferLocal = mk "uses-prefer-local" "echo ${preferLocal} > $out" { };
       usesCached = mk "uses-cached" "echo ${cached} > $out" { };
@@ -578,4 +586,30 @@ fn evaluation_messages_are_still_shown() {
     let sandbox = Sandbox::new(Store::Local);
     let output = sandbox.run(&[], &["traced"], &[]);
     assert!(String::from_utf8_lossy(&output.stderr).contains("trace-from-evaluation"));
+}
+
+#[test]
+fn shell_applications_are_only_skipped_with_the_flag() {
+    let skipping = Sandbox::new(Store::Local);
+    let output = skipping.run(&["--skip-shell-applications"], &["shellApp"], &[]);
+    assert_eq!(
+        summary_of(&output),
+        "0 requested, 0 to build including dependencies, 1 skipped, 0 to fetch"
+    );
+    assert!(!skipping.is_valid("shellApp"));
+
+    let default = Sandbox::new(Store::Local);
+    let printed = default.run_ok(&[], &["shellApp"]);
+    assert_eq!(printed, [default.out_path("shellApp")]);
+}
+
+#[test]
+fn shell_application_is_still_built_when_something_requested_needs_it() {
+    let sandbox = Sandbox::new(Store::Local);
+    let output = sandbox.run(&["--skip-shell-applications"], &["usesShellApp"], &[]);
+    assert_eq!(
+        summary_of(&output),
+        "1 requested, 2 to build including dependencies, 0 skipped, 0 to fetch"
+    );
+    assert!(sandbox.is_valid("shellApp"));
 }

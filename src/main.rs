@@ -28,6 +28,11 @@ struct Cli {
     #[arg(long)]
     skip_prefer_local: bool,
 
+    /// Also skip what looks like a `writeShellApplication` script. This is a best-effort match:
+    /// clients could still fetch these, and they will build them locally instead
+    #[arg(long)]
+    skip_shell_applications: bool,
+
     /// Run this `sh` command with the built output paths on stdin
     #[arg(long, value_name = "CMD")]
     push_command: Option<String>,
@@ -60,6 +65,7 @@ async fn main() -> Result<()> {
     let rule = SkipRule {
         always_allow_substitutes: read_bool_setting("always-allow-substitutes", &settings)?,
         skip_prefer_local: cli.skip_prefer_local,
+        skip_shell_applications: cli.skip_shell_applications,
     };
     let mut to_build = Vec::new();
     for drv_path in &missing.will_build {

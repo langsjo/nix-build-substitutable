@@ -14,7 +14,8 @@ $ nix run github:OWNER/nix-build-substitutable -- .#nixosConfigurations.host.con
 ```
 
 ```
-nix-build-substitutable [--skip-prefer-local] [--push-command <CMD>] <INSTALLABLES>... [-- <NIX_ARGS>...]
+nix-build-substitutable [--skip-prefer-local] [--skip-shell-applications] [--push-command <CMD>]
+                        <INSTALLABLES>... [-- <NIX_ARGS>...]
 ```
 
 - **stdout** lists the built output paths, one per line.
@@ -62,6 +63,19 @@ that derivation locally.
 which set only that attribute, can be substituted. So by default these derivations are built, which
 can put source tarballs in your cache. Use `--skip-prefer-local` to skip them too; clients then
 download those sources from upstream if they need them.
+
+### `writeShellApplication`
+
+nixpkgs lets clients fetch these scripts, so they're built by default. A client can build one itself
+in seconds, provided it can get ShellCheck, so `--skip-shell-applications` skips them too.
+
+Derivations don't record which builder made them, so this is a best-effort match on an executable
+text file under `/bin` with a bash shebang, `allowSubstitutes = true` and `preferLocalBuild = false`.
+Scripts it misses just get built, and they're listed under "will build". A hand-written
+`writeTextFile` with those same settings is skipped too. Skipped scripts don't get their ShellCheck
+run in CI, so a bad one fails on the client.
+
+NixOS's `activate` script sets `preferLocalBuild = true`, so `--skip-prefer-local` skips it instead.
 
 ## GitHub Actions
 
