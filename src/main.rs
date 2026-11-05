@@ -33,6 +33,10 @@ struct Cli {
     #[arg(long)]
     skip_shell_applications: bool,
 
+    /// Show what would be built, skipped and fetched, without building or pushing anything
+    #[arg(long)]
+    dry_run: bool,
+
     /// Run this `sh` command with the built output paths on stdin
     #[arg(long, value_name = "CMD")]
     push_command: Option<String>,
@@ -84,7 +88,7 @@ async fn main() -> Result<()> {
         "{}",
         describe_plan(&store_dir, to_build.len(), &missing, &planned)
     );
-    if to_build.is_empty() {
+    if cli.dry_run || to_build.is_empty() {
         return Ok(());
     }
 

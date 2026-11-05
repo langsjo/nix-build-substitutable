@@ -613,3 +613,52 @@ fn shell_application_is_still_built_when_something_requested_needs_it() {
     );
     assert!(sandbox.is_valid("shellApp"));
 }
+
+#[test]
+fn dry_run_shows_the_plan_without_building_or_pushing() {
+    let sandbox = Sandbox::new(Store::Local);
+    let marker = sandbox.root.path().join("pushed");
+    let push = format!("touch {}", marker.display());
+
+    let output = sandbox.run(&["--dry-run", "--push-command", &push], &["plain"], &[]);
+
+    assert_eq!(
+        summary_of(&output),
+        "1 requested, 1 to build including dependencies, 0 skipped, 0 to fetch"
+    );
+    assert!(output.stdout.is_empty(), "no output paths exist to print");
+    assert!(!sandbox.is_valid("plain"));
+    assert!(!marker.exists());
+}
+
+#[test]
+fn dry_run_does_not_download_inputs() {
+    let sandbox = Sandbox::new(Store::Local);
+    sandbox.populate_cache();
+
+    let summary = summary_of(&sandbox.run(&["--dry-run"], &["usesCached"], &[]));
+
+    assert_eq!(
+        summary,
+        "1 requested, 1 to build including dependencies, 0 skipped, 1 to fetch"
+    );
+    assert!(!sandbox.is_valid("cached"));
+}
+
+#[test]
+fn dry_run_succeeds_when_the_build_would_fail() {
+    let sandbox = Sandbox::new(Store::Local);
+    assert!(
+        sandbox
+            .run(&["--dry-run"], &["fails"], &[])
+            .status
+            .success()
+    );
+}
+
+#[test]
+fn dry_run_still_reports_evaluation_errors() {
+    let sandbox = Sandbox::new(Store::Local);
+    let output = sandbox.run(&["--dry-run"], &["doesNotExist"], &[]);
+    assert!(!output.status.success());
+}
