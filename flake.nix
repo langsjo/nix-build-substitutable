@@ -1,7 +1,7 @@
 {
   description = "Build only the derivations a binary cache client would actually fetch";
 
-  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
+  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
   outputs =
     { self, nixpkgs }:
@@ -42,6 +42,7 @@
           packages = with nixpkgs.legacyPackages.${system}; [
             clippy
             rustfmt
+            cargo
           ];
         };
       });
