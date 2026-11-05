@@ -381,3 +381,102 @@ fn evaluation_error_is_reported() {
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("doesNotExist"));
 }
+
+/// Every way of choosing a store for one nix-build-substitutable invocation.
+enum StoreChoice {
+    Flag,
+    Option,
+    UserConfig,
+    NixRemoteEnv,
+    NixConfigEnv,
+}
+
+/// The default store holds `plain`, and doesn't have the `toplevel` derivation at all. Looking at
+/// the default store by mistake would therefore build nothing, or fail to read the derivation.
+fn check_all_store_settings_are_honoured(store: Store, choice: StoreChoice) {
+    let sandbox = Sandbox::new(store);
+    sandbox.nix_ok(&["build", "--no-link", &sandbox.installable("plain")]);
+    let other_store = sandbox.root.path().join("other-store");
+    let other_store = other_store.to_str().unwrap();
+
+    let mut command = Command::new(env!("CARGO_BIN_EXE_nix-build-substitutable"));
+    sandbox.apply_env(&mut command);
+    command.arg(sandbox.installable("toplevel"));
+    match choice {
+        StoreChoice::Flag => {
+            command.args(["--", "--store", other_store]);
+        }
+        StoreChoice::Option => {
+            command.args(["--", "--option", "store", other_store]);
+        }
+        StoreChoice::UserConfig => {
+            let config_dir = sandbox.root.path().join("config/nix");
+            fs::create_dir_all(&config_dir).unwrap();
+            fs::write(
+                config_dir.join("nix.conf"),
+                format!("store = {other_store}\n"),
+            )
+            .unwrap();
+        }
+        StoreChoice::NixRemoteEnv => {
+            command.env("NIX_REMOTE", other_store);
+        }
+        StoreChoice::NixConfigEnv => {
+            command.env("NIX_CONFIG", format!("store = {other_store}"));
+        }
+    }
+    let output = command.output().unwrap();
+    assert!(
+        output.status.success(),
+        "nix-build-substitutable failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let mut printed = lines(&output.stdout);
+    printed.sort();
+    let mut expected = [sandbox.out_path("plain"), sandbox.out_path("cached")];
+    expected.sort();
+    assert_eq!(
+        printed, expected,
+        "inputs must be built in the chosen store"
+    );
+
+    let in_other_store = |path: &str| {
+        sandbox
+            .nix(&["path-info", "--store", other_store, path])
+            .status
+            .success()
+    };
+    assert!(in_other_store(&expected[0]) && in_other_store(&expected[1]));
+    assert!(!in_other_store(&sandbox.out_path("toplevel")));
+}
+
+#[test]
+fn store_flag_is_honoured() {
+    check_all_store_settings_are_honoured(Store::Local, StoreChoice::Flag);
+}
+
+#[test]
+fn store_flag_is_honoured_when_a_daemon_is_the_default_store() {
+    check_all_store_settings_are_honoured(Store::Daemon, StoreChoice::Flag);
+}
+
+#[test]
+fn store_option_is_honoured() {
+    check_all_store_settings_are_honoured(Store::Local, StoreChoice::Option);
+}
+
+#[test]
+fn store_in_user_config_is_honoured() {
+    check_all_store_settings_are_honoured(Store::Local, StoreChoice::UserConfig);
+}
+
+#[test]
+fn nix_remote_env_is_honoured() {
+    check_all_store_settings_are_honoured(Store::Local, StoreChoice::NixRemoteEnv);
+}
+
+#[test]
+fn store_in_nix_config_env_is_honoured() {
+    check_all_store_settings_are_honoured(Store::Local, StoreChoice::NixConfigEnv);
+}

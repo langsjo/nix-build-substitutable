@@ -846,6 +846,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "futures-util",
+ "harmonia-file-nar",
  "harmonia-protocol",
  "harmonia-store-aterm",
  "harmonia-store-derivation",

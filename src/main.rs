@@ -1,7 +1,7 @@
 //! Builds only the derivations a binary cache client would actually fetch.
 
+mod daemon;
 mod filter;
-mod missing;
 
 use std::io::Write;
 use std::os::fd::AsFd;
@@ -16,6 +16,7 @@ use harmonia_store_derivation::derived_path::DerivedPath;
 use harmonia_store_path::{StoreDir, StorePath};
 use serde_json::Value;
 
+use crate::daemon::NixDaemon;
 use crate::filter::SkipRule;
 
 #[derive(Parser)]
@@ -52,7 +53,8 @@ async fn main() -> Result<()> {
         .collect::<Result<Vec<DerivedPath>, _>>()
         .context("parsing the paths `nix build` reported")?;
 
-    let missing = missing::query_missing(&store_dir, &derived_paths, &settings).await?;
+    let mut daemon = NixDaemon::connect(&store_dir, &settings).await?;
+    let missing = daemon.query_missing(&derived_paths).await?;
     for path in &missing.unknown {
         eprintln!("warning: don't know how to build {path}");
     }
@@ -63,10 +65,11 @@ async fn main() -> Result<()> {
     };
     let mut to_build = Vec::new();
     for drv_path in &missing.will_build {
-        if !rule.skips(&read_derivation(&store_dir, drv_path)?) {
+        if !rule.skips(&read_derivation(&mut daemon, &store_dir, drv_path).await?) {
             to_build.push(format!("{}^*", store_dir.display(drv_path)));
         }
     }
+    drop(daemon);
     eprintln!(
         "{} to build, {} skipped, {} already cached",
         to_build.len(),
@@ -130,16 +133,20 @@ fn store_dir_of(targets: &[String]) -> Result<StoreDir> {
 
 /// Returns the settings in `nix_args` that every `nix` subcommand accepts.
 ///
-/// `nix daemon` and `nix config show` reject evaluation flags such as `--impure`.
+/// `nix daemon` and `nix config show` reject evaluation flags such as `--impure`. A store chosen
+/// through `nix.conf` or `NIX_REMOTE` needs no forwarding, as child processes read those too.
 /// shortcut: other forms such as `--substituters x` are not forwarded, parse them if needed.
 fn setting_args(nix_args: &[String]) -> Vec<String> {
     let mut settings = Vec::new();
     let mut args = nix_args.iter();
     while let Some(arg) = args.next() {
-        if arg == "--option" {
-            settings.push(arg.clone());
-            settings.extend(args.by_ref().take(2).cloned());
-        }
+        let value_count = match arg.as_str() {
+            "--option" => 2,
+            "--store" => 1,
+            _ => continue,
+        };
+        settings.push(arg.clone());
+        settings.extend(args.by_ref().take(value_count).cloned());
     }
     settings
 }
@@ -159,15 +166,16 @@ fn read_bool_setting(name: &str, settings: &[String]) -> Result<bool> {
     }
 }
 
-/// shortcut: reads the store directly, so chroot and remote stores are unsupported. Fetch the
-/// `.drv` over the daemon protocol if those are ever needed.
-fn read_derivation(store_dir: &StoreDir, drv_path: &StorePath) -> Result<Derivation> {
-    let file = store_dir.to_path().join(drv_path.to_string());
-    let aterm = std::fs::read(&file).with_context(|| format!("reading {}", file.display()))?;
+async fn read_derivation(
+    daemon: &mut NixDaemon,
+    store_dir: &StoreDir,
+    drv_path: &StorePath,
+) -> Result<Derivation> {
+    let aterm = daemon.read_file(drv_path).await?;
     let name = drv_path.name().to_string();
     let name = name.strip_suffix(".drv").unwrap_or(&name);
     parse_derivation_aterm(store_dir, &aterm, name.parse()?)
-        .with_context(|| format!("parsing {}", file.display()))
+        .with_context(|| format!("parsing {drv_path}"))
 }
 
 /// Builds through stdin because large closures would exceed the argv limit.
@@ -224,8 +232,17 @@ mod tests {
     }
 
     #[test]
-    fn only_option_flags_reach_every_subcommand() {
-        let args = ["-L", "--option", "cores", "4", "--impure"].map(String::from);
-        assert_eq!(setting_args(&args), ["--option", "cores", "4"]);
+    fn only_settings_reach_every_subcommand() {
+        let args = ["-L", "--option", "cores", "4", "--impure", "--store", "/s"].map(String::from);
+        assert_eq!(
+            setting_args(&args),
+            ["--option", "cores", "4", "--store", "/s"]
+        );
+    }
+
+    #[test]
+    fn flag_values_are_not_mistaken_for_flags() {
+        let args = ["--option", "--store", "x", "--impure"].map(String::from);
+        assert_eq!(setting_args(&args), ["--option", "--store", "x"]);
     }
 }

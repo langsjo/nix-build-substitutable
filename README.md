@@ -35,6 +35,15 @@ $ nix-build-substitutable --push-command 'attic push main --stdin' .#pkg
 `attic push` also uploads the runtime closure of those paths, including any skipped derivations
 they reference.
 
+## Choosing a store
+
+The tool uses the same store as Nix, however you select it: `-- --store X`, `-- --option store X`,
+`store = X` in `nix.conf`, `NIX_CONFIG`, or `NIX_REMOTE`.
+
+A store in a local directory is handled by your own process rather than the Nix daemon. If your
+`nix.conf` sets `secret-key-files` to a key only root can read, add
+`-- --option secret-key-files ''`.
+
 ## What gets built
 
 1. Nix's own `queryMissing`, the computation behind `nix build --dry-run`, lists what would have
@@ -74,9 +83,8 @@ download those sources from upstream if they need them.
 
 - If any build fails, nothing is pushed, even with `--keep-going`. Nix prints no output paths on
   failure.
-- `.drv` files are read directly from the store, so chroot and remote `--store` values aren't
-  supported.
-- Tested on Nix 2.34. Lix and Determinate Nix are untested.
+- Tested on Nix 2.31 and 2.34, with local directory stores and the daemon. Remote stores such as
+  `ssh-ng://` are untested. Lix and Determinate Nix are untested.
 
 ## Development
 
