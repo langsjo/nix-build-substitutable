@@ -1,0 +1,88 @@
+# nix-build-substitutable
+
+`nix build` for CI that fills a binary cache. It builds only the derivations a cache client
+would actually fetch, and downloads only what those builds need.
+
+Building a NixOS config normally downloads its whole runtime closure, because the final
+`toplevel` derivation needs it as input. Clients never fetch `toplevel` from a cache, so a CI job
+that changed one systemd unit can spend many gigabytes on nothing. `nix-build-substitutable` skips it.
+
+## Usage
+
+```console
+$ nix run github:OWNER/nix-build-substitutable -- .#nixosConfigurations.host.config.system.build.toplevel
+```
+
+```
+nix-build-substitutable [--skip-prefer-local] [--push-command <CMD>] <INSTALLABLES>... [-- <NIX_ARGS>...]
+```
+
+- **stdout** lists the built output paths, one per line.
+- **stderr** has the normal Nix output and a summary.
+- **`--push-command <CMD>`** runs `sh -c CMD` with the output paths on stdin. It doesn't run if
+  nothing was built.
+- **`<NIX_ARGS>`** go to `nix build`, for example `-- -L --impure`. Only `--option NAME VALUE`
+  also reaches the cache query, so pass settings that affect it in that form or in `nix.conf`.
+  `--expr` and `--file` aren't supported.
+
+Both of these push to [Attic](https://github.com/zhaofengli/attic):
+
+```console
+$ nix-build-substitutable .#pkg | attic push main --stdin
+$ nix-build-substitutable --push-command 'attic push main --stdin' .#pkg
+```
+
+`attic push` also uploads the runtime closure of those paths, including any skipped derivations
+they reference.
+
+## What gets built
+
+1. Nix's own `queryMissing`, the computation behind `nix build --dry-run`, lists what would have
+   to be built given your configured substituters. It uses the same concurrent lookups and
+   narinfo cache as Nix, rather than asking each cache about each path.
+2. Derivations a client can never fetch are removed: those with `allowSubstitutes = false`, unless
+   `always-allow-substitutes` is on.
+3. What's left is built with `nix build`, which downloads only the inputs those builds need.
+
+Uncached inputs of a skipped derivation are still built, because a client needs them to build
+that derivation locally.
+
+### `preferLocalBuild`
+
+`preferLocalBuild` alone doesn't stop a client fetching from a cache. It's why `fetchurl` outputs,
+which set only that attribute, can be substituted. So by default these derivations are built, which
+can put source tarballs in your cache. Use `--skip-prefer-local` to skip them too; clients then
+download those sources from upstream if they need them.
+
+## GitHub Actions
+
+```yaml
+- uses: cachix/install-nix-action@v31
+- name: Configure attic
+  run: |
+    nix profile add nixpkgs#attic-client
+    attic login main https://cache.example.com "${{ secrets.ATTIC_TOKEN }}"
+    attic use main
+- name: Build and push
+  run: |
+    nix run github:OWNER/nix-build-substitutable -- \
+      --push-command 'attic push main --stdin' \
+      .#nixosConfigurations.host.config.system.build.toplevel
+```
+
+## Limitations
+
+- If any build fails, nothing is pushed, even with `--keep-going`. Nix prints no output paths on
+  failure.
+- `.drv` files are read directly from the store, so chroot and remote `--store` values aren't
+  supported.
+- Tested on Nix 2.34. Lix and Determinate Nix are untested.
+
+## Development
+
+```console
+$ nix develop
+$ cargo test
+```
+
+The end-to-end tests use `nix` from `PATH`, in a private store that doesn't touch the system one.
