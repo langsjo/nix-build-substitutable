@@ -72,39 +72,32 @@ impl Sandbox {
             "experimental-features = nix-command flakes\n\
              sandbox = false\nbuild-users-group =\nrequire-sigs = false\n\
              trusted-users = *\nsubstituters =\nflake-registry =\n\
-             narinfo-cache-negative-ttl = 0\n",
+             narinfo-cache-negative-ttl = 0\n\
+             sandbox-build-dir = /sandbox-build\n",
         )
         .unwrap();
 
         let flake_dir = root.path().join("flake");
         fs::create_dir(&flake_dir).unwrap();
-        let system = String::from_utf8(
-            Command::new("nix")
-                .args([
-                    "eval",
-                    "--raw",
-                    "--impure",
-                    "--expr",
-                    "builtins.currentSystem",
-                ])
-                .args(["--extra-experimental-features", "nix-command"])
-                .output()
-                .unwrap()
-                .stdout,
-        )
-        .unwrap();
-        fs::write(
-            flake_dir.join("flake.nix"),
-            FLAKE.replace("@system@", &system),
-        )
-        .unwrap();
-
         let mut sandbox = Self {
             flake: format!("path:{}", flake_dir.display()),
             root,
             remote: "local",
             daemon: None,
         };
+        let system = sandbox.nix_ok(&[
+            "eval",
+            "--raw",
+            "--impure",
+            "--expr",
+            "builtins.currentSystem",
+        ]);
+        fs::write(
+            flake_dir.join("flake.nix"),
+            FLAKE.replace("@system@", &system),
+        )
+        .unwrap();
+
         if store == Store::Daemon {
             sandbox.start_daemon();
         }
@@ -154,7 +147,8 @@ impl Sandbox {
             .env("XDG_CONFIG_HOME", root.join("config"))
             .env("XDG_CACHE_HOME", root.join("cache-home"))
             .env("HOME", root.join("home"))
-            .env_remove("NIX_CONFIG");
+            // Offline, Nix disables substituters unless overridden, and nix.conf does not count.
+            .env("NIX_CONFIG", "substitute = true");
     }
 
     fn nix(&self, args: &[&str]) -> Output {
