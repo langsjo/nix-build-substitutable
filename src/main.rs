@@ -74,7 +74,7 @@ async fn main() -> Result<()> {
         skip_prefer_local: cli.skip_prefer_local,
         skip_shell_applications: cli.skip_shell_applications,
     };
-    let to_build = find_requests(
+    let requested = find_requests(
         &mut daemon,
         &store_dir,
         rule,
@@ -82,6 +82,13 @@ async fn main() -> Result<()> {
         &derived_paths,
     )
     .await?;
+    let to_build: Vec<String> = requested
+        .iter()
+        .map(|(drv_path, outputs)| {
+            let names: Vec<String> = outputs.iter().map(ToString::to_string).collect();
+            format!("{}^{}", store_dir.display(drv_path), names.join(","))
+        })
+        .collect();
 
     // Asked again because skipped derivations can still be needed by the requested ones, and what
     // they alone needed is no longer fetched.
@@ -89,9 +96,10 @@ async fn main() -> Result<()> {
         .query_missing(&parse_derived_paths(&store_dir, &to_build)?)
         .await?;
     drop(daemon);
+    let requested_drvs: Vec<&StorePath> = requested.keys().collect();
     eprintln!(
         "{}",
-        describe_plan(&store_dir, to_build.len(), &missing, &planned)
+        describe_plan(&store_dir, &requested_drvs, &missing, &planned)
     );
     if cli.dry_run || to_build.is_empty() {
         return Ok(());
@@ -106,7 +114,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// Returns what to ask `nix build` for, in `DerivedPath` syntax: the outputs a client fetches.
+/// Returns what to ask `nix build` for: the outputs a client fetches, by derivation.
 ///
 /// A client fetches each target, so its dependencies are left for Nix to build as needed. Only for
 /// a skipped derivation, which the client builds itself, does it fetch the inputs instead.
@@ -116,7 +124,7 @@ async fn find_requests(
     rule: SkipRule,
     will_build: &BTreeSet<StorePath>,
     targets: &[DerivedPath],
-) -> Result<Vec<String>> {
+) -> Result<BTreeMap<StorePath, BTreeSet<OutputName>>> {
     let mut pending = Vec::new();
     for target in targets {
         // `parse_targets` always names the outputs, and plain store paths are never built.
@@ -130,7 +138,7 @@ async fn find_requests(
         }
     }
 
-    let mut requested: BTreeMap<StorePath, BTreeSet<OutputName>> = BTreeMap::new();
+    let mut requested = BTreeMap::<StorePath, BTreeSet<OutputName>>::new();
     let mut skipped = BTreeSet::new();
     while let Some((drv_path, output)) = pending.pop() {
         if !will_build.contains(&drv_path) || skipped.contains(&drv_path) {
@@ -149,13 +157,7 @@ async fn find_requests(
         }
     }
 
-    Ok(requested
-        .iter()
-        .map(|(drv_path, outputs)| {
-            let names: Vec<String> = outputs.iter().map(ToString::to_string).collect();
-            format!("{}^{}", store_dir.display(drv_path), names.join(","))
-        })
-        .collect())
+    Ok(requested)
 }
 
 /// Returns the derivation output an input needs first, or nothing for a plain source.

@@ -609,6 +609,29 @@ fn only_the_real_plan_is_listed() {
 }
 
 #[test]
+fn requested_derivations_are_listed_before_everything_to_build() {
+    let sandbox = Sandbox::new(Store::Local);
+    let output = sandbox.run(&["--dry-run"], &["usesPlainAtBuildTime"], &[]);
+    assert!(output.status.success());
+
+    let drv = |package: &str| {
+        let attribute = format!("{}.drvPath", sandbox.installable(package));
+        format!("  {}", sandbox.nix_ok(&["eval", "--raw", &attribute]))
+    };
+    let log = lines(&output.stderr);
+    let requested = log
+        .iter()
+        .position(|line| line == "requested 1 derivation:")
+        .expect("no list of requests");
+
+    assert_eq!(log[requested + 1], drv("usesPlainAtBuildTime"));
+    assert_eq!(log[requested + 2], "will build 2 derivations:");
+    let to_build = [log[requested + 3].clone(), log[requested + 4].clone()];
+    assert!(to_build.contains(&drv("usesPlainAtBuildTime")));
+    assert!(to_build.contains(&drv("plain")));
+}
+
+#[test]
 fn skipped_derivations_are_only_mentioned_as_skipped() {
     let sandbox = Sandbox::new(Store::Local);
     let output = sandbox.run(&[], &["toplevel"], &[]);

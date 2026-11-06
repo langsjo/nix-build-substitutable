@@ -32,7 +32,7 @@ fn is_missing_list_header(line: &str) -> bool {
 /// Describes the outcome, given Nix's answers for everything and for just what gets requested.
 pub fn describe_plan(
     store_dir: &StoreDir,
-    requested: usize,
+    requested: &[&StorePath],
     everything: &QueryMissingResult,
     planned: &QueryMissingResult,
 ) -> String {
@@ -43,7 +43,7 @@ pub fn describe_plan(
     let to_build: Vec<&StorePath> = planned.will_build.iter().collect();
     let to_fetch: Vec<&StorePath> = planned.will_substitute.iter().collect();
 
-    let mut plan = String::new();
+    let mut plan = section(store_dir, "requested", "derivation", "", requested);
     plan += &section(store_dir, "will build", "derivation", "", &to_build);
     plan += &section(store_dir, "skipped", "derivation", "", &skipped);
     let sizes = format!(
@@ -53,7 +53,8 @@ pub fn describe_plan(
     );
     plan += &section(store_dir, "will fetch", "path", &sizes, &to_fetch);
     plan + &format!(
-        "{requested} requested, {} to build including dependencies, {} skipped, {} to fetch",
+        "{} requested, {} to build including dependencies, {} skipped, {} to fetch",
+        requested.len(),
         to_build.len(),
         skipped.len(),
         to_fetch.len(),
@@ -156,14 +157,16 @@ mod tests {
 
     #[test]
     fn plan_separates_built_skipped_and_fetched_paths() {
+        let requested = paths(&[A]);
         let plan = describe_plan(
             &StoreDir::default(),
-            1,
+            &requested.iter().collect::<Vec<_>>(),
             &query_result(&[A, B, C], &[]),
             &query_result(&[A, B], &[F]),
         );
         let expected = format!(
-            "will build 2 derivations:\n  /nix/store/{B}\n  /nix/store/{A}\n\
+            "requested 1 derivation:\n  /nix/store/{A}\n\
+             will build 2 derivations:\n  /nix/store/{B}\n  /nix/store/{A}\n\
              skipped 1 derivation:\n  /nix/store/{C}\n\
              will fetch 1 path (1.0 MiB download, 1.5 MiB unpacked):\n  /nix/store/{F}\n\
              1 requested, 2 to build including dependencies, 1 skipped, 1 to fetch"
@@ -174,7 +177,7 @@ mod tests {
     #[test]
     fn empty_sections_are_left_out() {
         let empty = query_result(&[], &[]);
-        let plan = describe_plan(&StoreDir::default(), 0, &empty, &empty);
+        let plan = describe_plan(&StoreDir::default(), &[], &empty, &empty);
         assert_eq!(
             plan,
             "0 requested, 0 to build including dependencies, 0 skipped, 0 to fetch"

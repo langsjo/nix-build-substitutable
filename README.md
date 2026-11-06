@@ -47,8 +47,9 @@ nix-build-substitutable [--skip-prefer-local] [--skip-shell-applications] [--dry
 
 - **stdout** lists the output paths a client fetches, one per line. Build-time dependencies are built
   but not listed.
-- **stderr** has the normal Nix output, plus what will be built, skipped and fetched.
-- **`--dry-run`** prints what would be built, skipped and fetched, then stops. No derivations are built,
+- **stderr** has the normal Nix output, plus what will be requested, built, skipped and fetched.
+  Requested derivations are the ones whose outputs go to stdout, and are also listed as built.
+- **`--dry-run`** prints what would be requested, built, skipped and fetched, then stops. No derivations are built,
   no paths are fetched for them and nothing is pushed. As with `nix build --dry-run`, evaluating can
   still download flake inputs and write `.drv` files to the store.
 - **`--push-command <CMD>`** runs `sh -c CMD` with the output paths on stdin. It doesn't run if
