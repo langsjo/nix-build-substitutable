@@ -72,8 +72,7 @@ impl Sandbox {
             "experimental-features = nix-command flakes\n\
              sandbox = false\nbuild-users-group =\nrequire-sigs = false\n\
              trusted-users = *\nsubstituters =\nflake-registry =\n\
-             narinfo-cache-negative-ttl = 0\n\
-             sandbox-build-dir = /sandbox-build\n",
+             narinfo-cache-negative-ttl = 0\n",
         )
         .unwrap();
 
@@ -397,13 +396,16 @@ enum StoreChoice {
     NixConfigEnv,
 }
 
-/// The default store holds `plain`, and doesn't have the `toplevel` derivation at all. Looking at
-/// the default store by mistake would therefore build nothing, or fail to read the derivation.
+/// The chosen store has its own store directory, so its paths differ from the default store's and
+/// looking at the default store by mistake fails. A plain directory would need a nested sandbox
+/// to build in, which doesn't work inside every Nix build.
 fn check_all_store_settings_are_honoured(store: Store, choice: StoreChoice) {
     let sandbox = Sandbox::new(store);
-    sandbox.nix_ok(&["build", "--no-link", &sandbox.installable("plain")]);
-    let other_store = sandbox.root.path().join("other-store");
-    let other_store = other_store.to_str().unwrap();
+    let other_root = sandbox.root.path().join("other-store");
+    let other_root = other_root.display();
+    let other_store =
+        format!("local?store={other_root}/store&state={other_root}/state&log={other_root}/log");
+    let other_store = other_store.as_str();
 
     let mut command = Command::new(env!("CARGO_BIN_EXE_nix-build-substitutable"));
     sandbox.apply_env(&mut command);
@@ -440,7 +442,11 @@ fn check_all_store_settings_are_honoured(store: Store, choice: StoreChoice) {
 
     let mut printed = lines(&output.stdout);
     printed.sort();
-    let mut expected = [sandbox.out_path("plain"), sandbox.out_path("cached")];
+    let out_path = |package: &str| {
+        let attribute = format!("{}.outPath", sandbox.installable(package));
+        sandbox.nix_ok(&["eval", "--raw", "--store", other_store, &attribute])
+    };
+    let mut expected = [out_path("plain"), out_path("cached")];
     expected.sort();
     assert_eq!(
         printed, expected,
@@ -454,7 +460,7 @@ fn check_all_store_settings_are_honoured(store: Store, choice: StoreChoice) {
             .success()
     };
     assert!(in_other_store(&expected[0]) && in_other_store(&expected[1]));
-    assert!(!in_other_store(&sandbox.out_path("toplevel")));
+    assert!(!in_other_store(&out_path("toplevel")));
 }
 
 #[test]
@@ -655,4 +661,24 @@ fn dry_run_still_reports_evaluation_errors() {
     let sandbox = Sandbox::new(Store::Local);
     let output = sandbox.run(&["--dry-run"], &["doesNotExist"], &[]);
     assert!(!output.status.success());
+}
+
+/// A plain directory is the usual way to pass `--store`. Building in one needs a nested sandbox, so
+/// this only checks that the plan comes from it: the default store already has `plain`.
+#[test]
+fn plain_directory_store_is_queried() {
+    let sandbox = Sandbox::new(Store::Local);
+    sandbox.nix_ok(&["build", "--no-link", &sandbox.installable("plain")]);
+    let directory = sandbox.root.path().join("directory-store");
+
+    let output = sandbox.run(
+        &["--dry-run"],
+        &["toplevel"],
+        &["--store", directory.to_str().unwrap()],
+    );
+
+    assert_eq!(
+        summary_of(&output),
+        "2 requested, 2 to build including dependencies, 1 skipped, 0 to fetch"
+    );
 }
