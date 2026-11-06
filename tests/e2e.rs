@@ -22,6 +22,9 @@ const FLAKE: &str = r##"{
     cached = file "cached" { };
     preferLocal = file "prefer-local" { preferLocalBuild = true; };
     localOnly = { allowSubstitutes = false; preferLocalBuild = true; };
+    # Reads `plain` while building, but its output doesn't reference it.
+    usesPlainAtBuildTime = mk "uses-plain-at-build-time" "read line < ${plain}; echo built > $out" { };
+    split = mk "split" "echo out > $out; echo dev > $dev" { outputs = [ "out" "dev" ]; };
     shellApp = mk "shell-app" "echo app > $out" {
       allowSubstitutes = true;
       preferLocalBuild = false;
@@ -31,7 +34,7 @@ const FLAKE: &str = r##"{
     };
   in {
     packages."@system@" = {
-      inherit plain cached;
+      inherit plain cached split usesPlainAtBuildTime;
       inherit preferLocal shellApp;
       usesShellApp = mk "uses-shell-app" "echo ${shellApp} > $out" { };
       traced = builtins.trace "trace-from-evaluation" (file "traced" { });
@@ -43,6 +46,8 @@ const FLAKE: &str = r##"{
       # Shaped like a NixOS toplevel: a client always builds it locally from its inputs.
       toplevel = mk "toplevel" "echo ${plain} ${cached} > $out" localOnly;
       cachedInputOnly = mk "cached-input-only" "echo ${cached} > $out" localOnly;
+      toplevelOfBuildTimeUser = mk "toplevel-of-build-time-user" "echo ${usesPlainAtBuildTime} > $out" localOnly;
+      toplevelOfDevOutput = mk "toplevel-of-dev-output" "echo ${split.dev} > $out" localOnly;
     };
   };
 }"##;
@@ -258,6 +263,41 @@ fn toplevel_is_skipped_but_its_uncached_input_is_built_without_daemon() {
 #[test]
 fn toplevel_is_skipped_but_its_uncached_input_is_built_with_daemon() {
     check_toplevel_is_skipped_but_its_uncached_input_is_built(Store::Daemon);
+}
+
+#[test]
+fn build_time_dependency_is_built_but_not_printed() {
+    let sandbox = Sandbox::new(Store::Local);
+
+    let printed = sandbox.run_ok(&[], &["usesPlainAtBuildTime"]);
+
+    assert_eq!(printed, [sandbox.out_path("usesPlainAtBuildTime")]);
+    assert!(sandbox.is_valid("plain"));
+}
+
+#[test]
+fn build_time_dependency_of_a_skipped_derivations_input_is_not_printed() {
+    let sandbox = Sandbox::new(Store::Local);
+
+    let printed = sandbox.run_ok(&[], &["toplevelOfBuildTimeUser"]);
+
+    assert_eq!(printed, [sandbox.out_path("usesPlainAtBuildTime")]);
+    assert!(sandbox.is_valid("plain"));
+    assert!(!sandbox.is_valid("toplevelOfBuildTimeUser"));
+}
+
+#[test]
+fn only_the_output_a_skipped_derivation_uses_is_printed() {
+    let sandbox = Sandbox::new(Store::Local);
+
+    let printed = sandbox.run_ok(&[], &["toplevelOfDevOutput"]);
+
+    let dev = sandbox.nix_ok(&[
+        "eval",
+        "--raw",
+        &format!("{}.dev.outPath", sandbox.installable("split")),
+    ]);
+    assert_eq!(printed, [dev]);
 }
 
 #[test]

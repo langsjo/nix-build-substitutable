@@ -4,6 +4,7 @@ mod daemon;
 mod filter;
 mod report;
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::fd::AsFd;
 use std::path::Path;
@@ -13,7 +14,9 @@ use anyhow::{Context, Result, bail, ensure};
 use clap::Parser;
 use harmonia_store_aterm::parse_derivation_aterm;
 use harmonia_store_derivation::derivation::Derivation;
-use harmonia_store_derivation::derived_path::DerivedPath;
+use harmonia_store_derivation::derived_path::{
+    DerivedPath, OutputName, OutputSpec, SingleDerivedPath,
+};
 use harmonia_store_path::{StoreDir, StorePath};
 use serde_json::Value;
 
@@ -71,12 +74,14 @@ async fn main() -> Result<()> {
         skip_prefer_local: cli.skip_prefer_local,
         skip_shell_applications: cli.skip_shell_applications,
     };
-    let mut to_build = Vec::new();
-    for drv_path in &missing.will_build {
-        if !rule.skips(&read_derivation(&mut daemon, &store_dir, drv_path).await?) {
-            to_build.push(format!("{}^*", store_dir.display(drv_path)));
-        }
-    }
+    let to_build = find_requests(
+        &mut daemon,
+        &store_dir,
+        rule,
+        &missing.will_build,
+        &derived_paths,
+    )
+    .await?;
 
     // Asked again because skipped derivations can still be needed by the requested ones, and what
     // they alone needed is no longer fetched.
@@ -99,6 +104,71 @@ async fn main() -> Result<()> {
         push(command, &out_paths)?;
     }
     Ok(())
+}
+
+/// Returns what to ask `nix build` for, in `DerivedPath` syntax: the outputs a client fetches.
+///
+/// A client fetches each target, so its dependencies are left for Nix to build as needed. Only for
+/// a skipped derivation, which the client builds itself, does it fetch the inputs instead.
+async fn find_requests(
+    daemon: &mut NixDaemon,
+    store_dir: &StoreDir,
+    rule: SkipRule,
+    will_build: &BTreeSet<StorePath>,
+    targets: &[DerivedPath],
+) -> Result<Vec<String>> {
+    let mut pending = Vec::new();
+    for target in targets {
+        // `parse_targets` always names the outputs, and plain store paths are never built.
+        if let DerivedPath::Built {
+            drv_path,
+            outputs: OutputSpec::Named(names),
+        } = target
+        {
+            let drv_path = drv_path.root_path();
+            pending.extend(names.iter().map(|name| (drv_path.clone(), name.clone())));
+        }
+    }
+
+    let mut requested: BTreeMap<StorePath, BTreeSet<OutputName>> = BTreeMap::new();
+    let mut skipped = BTreeSet::new();
+    while let Some((drv_path, output)) = pending.pop() {
+        if !will_build.contains(&drv_path) || skipped.contains(&drv_path) {
+            continue;
+        }
+        if let Some(outputs) = requested.get_mut(&drv_path) {
+            outputs.insert(output);
+            continue;
+        }
+        let drv = read_derivation(daemon, store_dir, &drv_path).await?;
+        if rule.skips(&drv) {
+            pending.extend(drv.inputs.iter().filter_map(input_drv_output));
+            skipped.insert(drv_path);
+        } else {
+            requested.insert(drv_path, BTreeSet::from([output]));
+        }
+    }
+
+    Ok(requested
+        .iter()
+        .map(|(drv_path, outputs)| {
+            let names: Vec<String> = outputs.iter().map(ToString::to_string).collect();
+            format!("{}^{}", store_dir.display(drv_path), names.join(","))
+        })
+        .collect())
+}
+
+/// Returns the derivation output an input needs first, or nothing for a plain source.
+///
+/// For a dynamic derivation's input, that is the output that produces the inner `.drv`.
+fn input_drv_output(input: &SingleDerivedPath) -> Option<(StorePath, OutputName)> {
+    let SingleDerivedPath::Built { drv_path, output } = input else {
+        return None;
+    };
+    match drv_path.as_ref() {
+        SingleDerivedPath::Opaque(path) => Some((path.clone(), output.clone())),
+        nested => input_drv_output(nested),
+    }
 }
 
 fn parse_derived_paths(store_dir: &StoreDir, paths: &[String]) -> Result<Vec<DerivedPath>> {
@@ -258,6 +328,18 @@ fn push(command: &str, out_paths: &str) -> Result<()> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn dynamic_input_needs_the_output_that_produces_its_derivation() {
+        let drv = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-a.drv";
+        let store_dir = StoreDir::default();
+        let input: SingleDerivedPath = store_dir.parse(&format!("{drv}^inner.drv^out")).unwrap();
+
+        let (path, output) = input_drv_output(&input).unwrap();
+
+        assert_eq!(store_dir.display(&path).to_string(), drv);
+        assert_eq!(output.to_string(), "inner.drv");
+    }
 
     #[test]
     fn targets_keep_requested_outputs_and_plain_paths() {

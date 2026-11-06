@@ -45,7 +45,8 @@ nix-build-substitutable [--skip-prefer-local] [--skip-shell-applications] [--dry
                         <INSTALLABLES>... [-- <NIX_ARGS>...]
 ```
 
-- **stdout** lists the built output paths, one per line.
+- **stdout** lists the output paths a client fetches, one per line. Build-time dependencies are built
+  but not listed.
 - **stderr** has the normal Nix output, plus what will be built, skipped and fetched.
 - **`--dry-run`** prints what would be built, skipped and fetched, then stops. No derivations are built,
   no paths are fetched for them and nothing is pushed. As with `nix build --dry-run`, evaluating can
@@ -82,10 +83,11 @@ A store in a local directory is handled by your own process rather than the Nix 
    narinfo cache as Nix, rather than asking each cache about each path.
 2. Derivations a client can never fetch are removed: those with `allowSubstitutes = false`, unless
    `always-allow-substitutes` is on.
-3. What's left is built with `nix build`, which downloads only the inputs those builds need.
+3. Starting from what you asked for, the outputs a client fetches are requested with `nix build`.
+   That builds their dependencies and downloads only the inputs those builds need.
 
-Uncached inputs of a skipped derivation are still built, because a client needs them to build
-that derivation locally.
+Uncached inputs of a skipped derivation are requested in its place, because a client needs them to
+build that derivation locally.
 
 ### `preferLocalBuild`
 
