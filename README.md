@@ -1,5 +1,32 @@
 # nix-build-substitutable
 
+## Slop warning
+This was vibe coded and I haven't read the code. For the artisanally coded hack MVP, use the following:
+```bash
+if ! nix_build_output=$(
+  nix build .#package --dry-run 2>&1 >/dev/null
+); then
+  printf "%s" "$nix_build_output"
+  exit 1
+fi
+
+if printf "%s" "$nix_build_output" \
+  | awk '
+  /these [0-9]+ paths will be fetched/{exit}
+  /these [0-9]+ derivations will be built/{next}
+  {print}
+  ' | grep '\.drv$' \
+  | xargs grep -vlE '\\"preferLocalBuild\\":true|\("preferLocalBuild","1"\)' > build_drvs.txt; \
+then
+  xargs nix-store --realise < build_drvs.txt
+else
+  echo "Seemingly no derivations to be built; output from dry-run:"
+  cat dry_run_output.txt
+fi
+```
+
+## General
+
 `nix build` for CI that fills a binary cache. It builds only the derivations a cache client
 would actually fetch, and downloads only what those builds need.
 
