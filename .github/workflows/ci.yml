@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    if: github.ref != 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: cachix/install-nix-action@v31
+      - name: Build
+        run: nix build -L
+
+  build-and-cache:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: cache
+    steps:
+      - uses: actions/checkout@v7
+      - uses: cachix/install-nix-action@v31
+      - name: Configure attic
+        env:
+          ATTIC_TOKEN: ${{ secrets.ATTIC_TOKEN }}
+        run: |
+          nix profile add --impure --expr \
+            "(builtins.getFlake (toString ./.)).inputs.nixpkgs.legacyPackages.$(uname -m)-linux.attic-client"
+          attic login main https://cache.langsjo.dev "$ATTIC_TOKEN"
+          attic use main
+
+      - name: Build
+        run: nix build -L
+
+      - name: Push to cache
+        run: attic push main result
