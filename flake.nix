@@ -26,8 +26,7 @@
             src = self;
             cargoLock = {
               lockFile = ./Cargo.lock;
-              # Harmonia is not on crates.io; this reads its pinned rev from Cargo.lock.
-              allowBuiltinFetchGit = true;
+              outputHashes."harmonia-file-core-3.3.0" = "sha256-LLWOdT+JwMLYDQ5WwK7HIxz6cUNSs79iKhsJV8Mg7Hw=";
             };
             # The end-to-end tests run real Nix in a private store.
             nativeCheckInputs = [ pkgs.nix ];
